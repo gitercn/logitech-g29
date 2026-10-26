@@ -345,35 +345,147 @@ function leds(setting) {
 //------------------
 // Functions: Force
 //------------------
+function unit(value, fallback) {
+    /*
+    Clamp a 0 - 1 setting. Anything that is not a finite number becomes the fallback.
+    @param   {*}       value     Candidate value.
+    @param   {Number}  fallback  Value to use when the candidate is not a finite number.
+    @return  {Number}
+    */
+    const number = (typeof value === 'number') ? value : Number(value)
+
+    if (value === null || value === '' || !Number.isFinite(number)) {
+        return fallback
+    }
+
+    return Math.min(1, Math.max(0, number))
+} // unit
+
+function autocenterReports(setting) {
+    /*
+    Build the HID reports for an auto-centering setting without sending them.
+    @param   {*}  setting  true, false, [stiffness, force] or {left, right, force}. See API documentation.
+    @return  {Array}       Array of reports to send in order, or null when the setting is not understood.
+
+    The spring report is 0xfe 0x0d LEFT RIGHT FORCE 0x00 0x00:
+        LEFT   spring coefficient while the wheel is left of center, 0x00 to 0x07
+        RIGHT  spring coefficient while the wheel is right of center, 0x00 to 0x07
+        FORCE  force level, 0x00 to 0xff
+
+    Only the MOMO / MOMO2 wheels accept coefficients up to 0x0f. A G29 ignores the
+    high bit, so 0x08 to 0x0f wrap around to 0x00 to 0x07 (0x08 feels like no spring).
+    The Linux driver fixed the same mistake in "HID:hid-lg4ff: Correct Auto-center
+    strength for wheels other than MOMO and MOMO2", and earlier versions of this
+    library scaled the coefficient to 0x0f, which made values above 0.5 weaker.
+
+    0x14 turns auto-centering on with the most recent spring report; 0xf5 turns it off.
+    */
+    const on = [0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    const off = [0xf5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+
+    let left
+    let right
+    let force
+
+    if (setting === true) {
+        // default profile, the strongest spring a G29 accepts
+        left = 1
+        right = 1
+        force = 1
+    } else if (setting === false || setting === 0) {
+        return [off]
+    } else if (Array.isArray(setting) && setting.length === 2) {
+        left = unit(setting[0], NaN)
+        right = left
+        force = unit(setting[1], NaN)
+    } else if (setting !== null && typeof setting === 'object' && !Array.isArray(setting)) {
+        left = unit(setting.left, 1)
+        right = unit(setting.right, 1)
+        force = unit(setting.force, 1)
+    } else {
+        return null
+    }
+
+    if (Number.isNaN(left) || Number.isNaN(force)) {
+        return null
+    }
+
+    const spring = [
+        0xfe,
+        0x0d,
+        Math.round(left * 7),
+        Math.round(right * 7),
+        Math.round(force * 255),
+        0x00,
+        0x00,
+        0x00
+    ]
+
+    return [on, spring]
+} // autocenterReports
+
 function autoCenter() {
     /*
     Set wheel autocentering based on existing options.
     */
-    const option = options.autocenter
+    const reports = autocenterReports(options.autocenter)
 
-    if (option) {
-        // auto-center on
-        relayOS([0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-
-        if (Array.isArray(option) && option.length === 2) {
-            // custom auto-center
-
-            // byte 3-4 is effect strength, 0x00 to 0x0f
-            option[0] = Math.round(option[0] * 15)
-
-            // byte 5 is the rate the effect strength rises as the wheel turns, 0x00 to 0xff
-            option[1] = Math.round(option[1] * 255)
-
-            relayOS([0xfe, 0x0d, option[0], option[0], option[1], 0x00, 0x00, 0x00])
-        } else {
-            // use default strength profile
-            relayOS([0xfe, 0x0d, 0x07, 0x07, 0xff, 0x00, 0x00, 0x00])
+    if (reports === null) {
+        if (options.debug) {
+            console.log(color.yellow('autoCenter -> Ignoring unknown setting'), options.autocenter)
         }
-    } else {
-        // auto-center off
-        relayOS([0xf5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        return
+    }
+
+    for (const report of reports) {
+        relayOS(report)
     }
 } // autoCenter
+
+function autocenter(setting) {
+    /*
+    Change auto-centering while connected. The setting is remembered for the next connect.
+    @param   {*}        setting  true, false, [stiffness, force] or {left, right, force}. See API documentation.
+    @return  {Boolean}           False when the setting was not understood and nothing was sent.
+    */
+    if (typeof setting === 'undefined') {
+        setting = true
+    }
+
+    if (autocenterReports(setting) === null) {
+        if (options.debug) {
+            console.log(color.yellow('autocenter -> Ignoring unknown setting'), setting)
+        }
+        return false
+    }
+
+    // keep a copy so later changes to the caller's array or object have no effect
+    options.autocenter = (setting !== null && typeof setting === 'object')
+        ? JSON.parse(JSON.stringify(setting))
+        : setting
+
+    autoCenter()
+
+    return true
+} // autocenter
+
+function range(degrees) {
+    /*
+    Change the wheel range while connected. The setting is remembered for the next connect.
+    @param   {Number}   degrees  40 to 900. Values outside are clamped.
+    @return  {Boolean}           False when degrees is not a number and nothing was sent.
+    */
+    const number = Number(degrees)
+
+    if (degrees === null || degrees === '' || !Number.isFinite(number)) {
+        return false
+    }
+
+    options.range = Math.round(number)
+    setRange()
+
+    return true
+} // range
 
 function forceConstant(number) {
     /*
@@ -539,10 +651,15 @@ module.exports.once = once
 module.exports.leds = leds
 
 // force
+module.exports.autocenter = autocenter
 module.exports.forceConstant = forceConstant
 module.exports.forceFriction = forceFriction
 module.exports.forceOff = forceOff
 
+// wheel
+module.exports.range = range
+
 // advanced
+module.exports.autocenterReports = autocenterReports
 module.exports.relay = relay
 module.exports.relayOS = relayOS

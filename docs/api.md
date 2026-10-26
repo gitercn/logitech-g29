@@ -7,12 +7,15 @@
   * [on](#on)
   * [once](#once)
 * [force](#force)
+  * [autocenter](#autocenter)
   * [forceConstant](#forceconstant)
   * [forceFriction](#forcefriction)
   * [forceOff](#forceoff)
 * [leds](#leds)
+* [range](#range)
 * [disconnect](#disconnect)
 * [advanced](#advanced)
+  * [autocenterReports](#autocenterreports)
   * [emitter](#emitter)
   * [relay](#relay)
   * [relayOS](#relayos)
@@ -48,11 +51,11 @@ The following options can be set when using `connect(options, callback)`.
 
 |Option|Default|Type|Examples|
 |:--|:--|:--|:--|
-|autocenter|true|boolean or array|true, false, [0.3, 0.7]|
+|autocenter|true|boolean, array or object|true, false, [0.3, 0.7], {left: 1, right: 0.5, force: 1}|
 |debug|false|boolean|true, false|
 |range|900|number|270, 900|
 
-`autocenter` can be fine tuned if you provide a two element array. The first value (0 - 1) controls the general strength of the auto-centering. The second value (0 - 1) controls how quickly that strength ramps up as you turn the wheel more.
+`autocenter` accepts the same settings as the [autocenter](#autocenter) function below, which can also change it while connected.
 
 `debug` enables a lot of console logging.
 
@@ -146,6 +149,31 @@ g.once('pedals-gas', function(val) {
 
 ## force
 
+### autocenter
+
+`autocenter(setting)`
+
+Change the centering spring while connected. The setting is also remembered and applied again on the next `connect`. Returns `false` and sends nothing when the setting is not understood.
+
+```js
+g.autocenter()                                 // on, default spring (same as true)
+g.autocenter(true)                             // on, strongest spring a G29 accepts
+g.autocenter(false)                            // off
+g.autocenter([0.5, 1])                         // [stiffness, force]
+g.autocenter({ left: 1, right: 0.3, force: 1 }) // stiffer when turned left than right
+```
+
+Every value is 0 - 1 and is clamped to that range.
+
+|Value|Meaning|Sent as|
+|:--|:--|:--|
+|stiffness, `left`, `right`|How quickly the centering force builds as the wheel moves away from center. `left` applies while the wheel is left of center, `right` while it is right of center. An array sets both sides to the same value.|0 - 7|
+|force|Overall strength of the centering force.|0 - 255|
+
+Object fields that are left out default to `1`, so `{ right: 0 }` keeps full centering on the left only.
+
+The hardware report is `0xfe 0x0d LEFT RIGHT FORCE`, followed by `0x14` to switch centering on. A G29 only accepts stiffness values 0 - 7: values 8 - 15 wrap around to 0 - 7, so 8 feels like no spring at all. Versions before 3.2.0 of this library scaled stiffness to 0 - 15, which made any first value above 0.5 weaker instead of stronger. Linux fixed the same mistake for non-MOMO wheels in the hid-lg4ff commit "Correct Auto-center strength for wheels other than MOMO and MOMO2".
+
 ### forceConstant
 
 `forceConstant(number)` where number is 0 - 1 to indicate both direction and strength.
@@ -206,6 +234,17 @@ g.leds([1,1,1])     // green, green, orange
 g.leds([0,0,0,0,1]) // red only
 ```
 
+## range
+
+`range(degrees)`
+
+Change the wheel range while connected, from 40 to 900 degrees. Values outside are clamped. The setting is also remembered for the next `connect`. Returns `false` and sends nothing when `degrees` is not a number.
+
+```js
+g.range(900) // full rotation
+g.range(270) // short and twitchy
+```
+
 ## disconnect
 
 `disconnect()`
@@ -213,6 +252,16 @@ g.leds([0,0,0,0,1]) // red only
 Disconnect in preparation to connect again or to allow other software to use the wheel.
 
 ## Advanced
+
+### autocenterReports
+
+`autocenterReports(setting)`
+
+Return the HID reports `autocenter(setting)` would send, without sending them. Useful for logging or tests. Returns `null` when the setting is not understood.
+
+```js
+g.autocenterReports([0.5, 1]) // [[0x14, 0, 0, 0, 0, 0, 0], [0xfe, 0x0d, 4, 4, 255, 0, 0, 0]]
+```
 
 ### emitter
 
