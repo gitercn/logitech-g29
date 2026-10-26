@@ -11,6 +11,13 @@ Bring your Logitech G29 Racing Wheel into the wonderful world of [Node](https://
 
 ## Changes in this fork
 
+**3.4.0** (every item measured on a G29)
+
+* Added: `forceDamper` takes a value per turning direction (`{left, right}`) and negative values that assist instead of resist.
+* Added: `forceSpring` takes a stiffness per side (`{left, right}`, where `0` means no spring on that side) and a negative stiffness for an anti-spring.
+* Changed: effects are started once and then refreshed, and a report identical to the last one in its slot is not sent again, so streaming a value costs nothing. See [effect slots](docs/api.md#effect-slots).
+* Documented: measured stiffness and damping per step, and that the friction report `0x0e` is a weaker damper on a G29.
+
 **3.3.0**
 
 * Renamed: `forceFriction` is really a damper (resistance grows with turning speed), so it is now [`forceDamper(setting)`](docs/api.md#forcedamper). It takes the same 0 - 1 value with 16 steps instead of 8, plus an optional force limit. `forceFriction` still works unchanged.

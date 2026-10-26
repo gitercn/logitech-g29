@@ -60,6 +60,10 @@ let memoryPrev = {
 }
 let prependWrite = false
 
+// What the library last started in each effect slot (index 1 - 4): the six report
+// bytes after the command byte, or null when the slot is stopped or unknown.
+let slotState = [null, null, null, null, null]
+
 //-------------
 // OS Specific
 //-------------
@@ -103,6 +107,7 @@ function connect(odo, callback) { // Constable Odo takes many forms.
 
     callback = (typeof callback === 'function') ? callback : function() {}
 
+    resetSlots()
     device = new hid.HID(findWheel())
 
     device.read(function(err, data) {
@@ -212,6 +217,8 @@ function relayOS(data) {
     Relay low level commands directly to the hardware after applying OS specific tweaks, if needed.
     @param  {Object}  data  Array of data to write. For example: [0xf8, 0x12, 0x1f, 0x00, 0x00, 0x00, 0x01]
     */
+    forgetSlots(data)
+
     if (prependWrite) {
         data.unshift(0x00)
     }
@@ -487,6 +494,54 @@ function range(degrees) {
     return true
 } // range
 
+function resetSlots() {
+    // Nothing is known to be playing, e.g. on connect.
+    slotState = [null, null, null, null, null]
+} // resetSlots
+
+function forgetSlots(data) {
+    /*
+    Forget the state of every slot a report touches, so a report sent by hand with
+    relayOS (or a stop) makes the next library call start its effect again.
+    @param  {Array}  data  Report about to be written, without the Windows report id.
+    */
+    const op = data[0] & 0x0f
+    const mask = data[0] >> 4
+
+    // 0x_0 / 0x_1 / 0x_2 / 0x_3 / 0x_c act on effect slots; 0xf8, 0xfe, 0x14, 0xf5 do not
+    if (![0x00, 0x01, 0x02, 0x03, 0x0c].includes(op)) {
+        return
+    }
+
+    for (let slot = 1; slot <= 4; slot++) {
+        if (mask & (1 << (slot - 1))) {
+            slotState[slot] = null
+        }
+    }
+} // forgetSlots
+
+function playSlot(slot, body) {
+    /*
+    Start or update the effect in one slot the way the Linux driver does: the first
+    report starts it (0x_1), later ones with the same effect type only refresh its
+    parameters (0x_c), and a report identical to the last one is not sent at all.
+    Restarting and refreshing measured the same on a G29; skipping repeats saves USB
+    traffic when an app streams the same value.
+    @param  {Number}  slot  1 to 4.
+    @param  {Array}   body  The six bytes after the command byte: effect type, then parameters.
+    */
+    const last = slotState[slot]
+
+    if (last !== null && last.every((byte, i) => byte === body[i])) {
+        return
+    }
+
+    const op = (last === null || last[0] !== body[0]) ? 0x01 : 0x0c
+
+    relayOS([(0x10 << (slot - 1)) + op].concat(body))
+    slotState[slot] = body.slice()
+} // playSlot
+
 function forceConstant(number) {
     /*
     Set or disable a constant force effect.
@@ -501,7 +556,7 @@ function forceConstant(number) {
 
     number = Math.round(Math.abs(number - 1) * 255)
 
-    relayOS([0x11, 0x00, number, 0x00, 0x00, 0x00, 0x00])
+    playSlot(1, [0x00, number, 0x00, 0x00, 0x00, 0x00])
 } // forceConstant
 
 function forceFriction(number) {
@@ -524,63 +579,94 @@ function forceFriction(number) {
     number = Math.round(number * 7)
 
     // Effect type 0x02 is the low resolution damper: resistance grows with how fast the
-    // wheel turns. Despite the name this is not friction (confirmed on a G29).
+    // wheel turns. Despite the name this is not friction (confirmed on a G29). Step K
+    // here measured about as strong as step 2K + 1 of forceDamper, so 7 matches 15.
     // the first "number" is for left rotation, the second for right rotation
-    relayOS([0x21, 0x02, number, 0x00, number, 0x00, 0x00])
+    playSlot(2, [0x02, number, 0x00, number, 0x00, 0x00])
 } // forceFriction
+
+function signedUnit(value, fallback) {
+    /*
+    Clamp a -1 - 1 setting. Anything that is not a finite number becomes the fallback.
+    @param   {*}       value     Candidate value.
+    @param   {Number}  fallback  Value to use when the candidate is not a finite number.
+    @return  {Number}
+    */
+    const number = (typeof value === 'number') ? value : Number(value)
+
+    if (value === null || value === '' || typeof value === 'boolean' || !Number.isFinite(number)) {
+        return fallback
+    }
+
+    return Math.min(1, Math.max(-1, number))
+} // signedUnit
 
 function damperReports(setting) {
     /*
     Build the HID reports for a damper setting without sending them.
-    @param   {*}  setting  Number, [strength, max] or {strength, max}. See API documentation.
+    @param   {*}  setting  Number, [strength, max] or {strength, left, right, max}. See API documentation.
     @return  {Array}       Array of reports to send in order, or null when the setting is not understood.
 
     The damper report is 0x21 0x0c K1 S1 K2 S2 MAX in slot 2 (shared with forceFriction):
-        K1, K2  damping coefficient for each direction, 0x00 to 0x0f (16 steps, no wrap around)
-        S1, S2  0x00 resists the movement, 0x01 would push along with it (not used)
+        K1, S1  while the wheel turns left: coefficient 0x00 to 0x0f (16 steps, no wrap
+                around) and 0x00 to resist the movement or 0x01 to push along with it
+        K2, S2  the same while the wheel turns right
         MAX     force limit, 0x00 to 0xff
+    All of this was measured on a G29 (scripts/hw-probe.mjs in the ProtoPie plugin).
     */
-    let strength
+    let left
+    let right
     let max
 
     if (typeof setting === 'undefined' || setting === false) {
-        strength = 0
-        max = 1
+        return [forceOffReport(2)]
     } else if (typeof setting === 'number') {
-        strength = unit(setting, NaN)
+        left = signedUnit(setting, NaN)
+        right = left
         max = 1
     } else if (Array.isArray(setting) && setting.length === 2) {
-        strength = unit(setting[0], NaN)
+        left = signedUnit(setting[0], NaN)
+        right = left
         max = unit(setting[1], NaN)
     } else if (setting !== null && typeof setting === 'object' && !Array.isArray(setting)) {
-        strength = unit(setting.strength, 1)
+        const strength = signedUnit(setting.strength, 1)
+
+        left = signedUnit(setting.left, strength)
+        right = signedUnit(setting.right, strength)
         max = unit(setting.max, 1)
     } else {
         return null
     }
 
-    if (Number.isNaN(strength) || Number.isNaN(max)) {
+    if ([left, right, max].some(Number.isNaN)) {
         return null
     }
 
-    if (strength === 0) {
+    if (left === 0 && right === 0) {
         return [forceOffReport(2)]
     }
 
-    const k = Math.round(strength * 15)
-
-    return [[0x21, 0x0c, k, 0x00, k, 0x00, Math.round(max * 255)]]
+    return [[
+        0x21,
+        0x0c,
+        Math.round(Math.abs(left) * 15),
+        left < 0 ? 0x01 : 0x00,
+        Math.round(Math.abs(right) * 15),
+        right < 0 ? 0x01 : 0x00,
+        Math.round(max * 255)
+    ]]
 } // damperReports
 
 function forceDamper(setting) {
     /*
-    Set or disable a damper: resistance that grows with how fast the wheel turns.
-    A finer forceFriction (16 steps instead of 8, plus a force limit). Both use slot 2,
-    so the most recent call wins.
-    @param   {*}        setting  Number between 0 and 1, [strength, max] or {strength, max}. Optional.
+    Set or disable a damper: resistance that grows with how fast the wheel turns. The
+    new name of forceFriction, with 16 steps, a force limit, a value per direction and
+    negative values that push along with the wheel instead. Both use slot 2, so the
+    most recent call wins.
+    @param   {*}        setting  Number between -1 and 1, [strength, max] or {strength, left, right, max}. Optional.
     @return  {Boolean}           False when the setting was not understood and nothing was sent.
     */
-    return relayReports('forceDamper', damperReports(setting), setting)
+    return relayReports('forceDamper', 2, damperReports(setting), setting)
 } // forceDamper
 
 function springPosition(value) {
@@ -591,17 +677,24 @@ function springPosition(value) {
 function springReports(setting) {
     /*
     Build the HID reports for a position spring without sending them.
-    @param   {*}  setting  false, [center, stiffness, max, deadband] or {center, stiffness, max, deadband}. See API documentation.
+    @param   {*}  setting  false, [center, stiffness, max, deadband] or {center, stiffness, left, right, max, deadband}. See API documentation.
     @return  {Array}       Array of reports to send in order, or null when the setting is not understood.
 
     The spring report is 0x41 0x0b D1 D2 K S MAX in slot 3:
         D1, D2  upper 8 bits of the 11 bit dead band edges (0 - 2047 across the current range)
         K       stiffness, right side in the upper 4 bits and left side in the lower 4 bits
-        S       lower 3 bits of D1 (bits 1 - 3) and D2 (bits 5 - 7); bits 0 and 4 would invert the spring
+        S       lower 3 bits of D1 (bits 1 - 3) and D2 (bits 5 - 7); bit 0 inverts the spring
         MAX     force limit, 0x00 to 0xff
+    Measured on a G29 (scripts/hw-probe.mjs in the ProtoPie plugin):
+      - stiffness 0 is still a weak spring, so a side set to 0 gets its edge moved to the
+        end of the range instead, which leaves no spring on that side at all
+      - bit 0 and bit 4 each invert BOTH sides (the spring pushes away from the center),
+        so only bit 0 is used and only for the whole spring
     */
     let center
     let stiffness
+    let left
+    let right
     let max
     let deadband
 
@@ -609,33 +702,42 @@ function springReports(setting) {
         return [forceOffReport(3)]
     } else if (Array.isArray(setting) && setting.length >= 1 && setting.length <= 4) {
         center = unit(setting[0], NaN)
-        stiffness = setting.length > 1 ? unit(setting[1], NaN) : 1
+        stiffness = setting.length > 1 ? signedUnit(setting[1], NaN) : 1
+        left = Math.abs(stiffness)
+        right = left
         max = setting.length > 2 ? unit(setting[2], NaN) : 1
         deadband = setting.length > 3 ? unit(setting[3], NaN) : 0
     } else if (setting !== null && typeof setting === 'object' && !Array.isArray(setting)) {
         center = unit(setting.center, NaN)
-        stiffness = unit(setting.stiffness, 1)
+        stiffness = signedUnit(setting.stiffness, 1)
+        left = unit(setting.left, Math.abs(stiffness))
+        right = unit(setting.right, Math.abs(stiffness))
         max = unit(setting.max, 1)
         deadband = unit(setting.deadband, 0)
     } else {
         return null
     }
 
-    if ([center, stiffness, max, deadband].some(Number.isNaN)) {
+    if ([center, stiffness, left, right, max, deadband].some(Number.isNaN)) {
         return null
     }
 
-    const d1 = springPosition(center - deadband / 2)
-    const d2 = springPosition(center + deadband / 2)
-    const k = Math.round(stiffness * 15)
+    if (left === 0 && right === 0) {
+        return [forceOffReport(3)]
+    }
+
+    const d1 = left === 0 ? 0 : springPosition(center - deadband / 2)
+    const d2 = right === 0 ? 2047 : springPosition(center + deadband / 2)
+    const kLeft = Math.round(left * 15)
+    const kRight = Math.round(right * 15)
 
     return [[
         0x41,
         0x0b,
         d1 >> 3,
         d2 >> 3,
-        (k << 4) + k,
-        ((d2 & 7) << 5) + ((d1 & 7) << 1),
+        (kRight << 4) + kLeft,
+        ((d2 & 7) << 5) + ((d1 & 7) << 1) + (stiffness < 0 ? 0x01 : 0x00),
         Math.round(max * 255)
     ]]
 } // springReports
@@ -643,17 +745,20 @@ function springReports(setting) {
 function forceSpring(setting) {
     /*
     Set or disable a position spring that pulls the wheel toward a chosen position.
-    Unlike auto-centering, the center can be anywhere and can have a dead band.
-    @param   {*}        setting  false, [center, stiffness, max, deadband] or {center, stiffness, max, deadband}. Optional.
+    Unlike auto-centering, the center can be anywhere and can have a dead band, each
+    side can be set apart, and a negative stiffness pushes away from the center.
+    @param   {*}        setting  false, [center, stiffness, max, deadband] or {center, stiffness, left, right, max, deadband}. Optional.
     @return  {Boolean}           False when the setting was not understood and nothing was sent.
     */
-    return relayReports('forceSpring', springReports(setting), setting)
+    return relayReports('forceSpring', 3, springReports(setting), setting)
 } // forceSpring
 
-function relayReports(name, reports, setting) {
+function relayReports(name, slot, reports, setting) {
     /*
-    Send reports built by one of the *Reports functions.
+    Send reports built by one of the *Reports functions. A start report goes through
+    playSlot, so updates become refreshes and repeats are skipped.
     @param   {String}   name      Function name for the debug message.
+    @param   {Number}   slot      Effect slot the reports belong to.
     @param   {Array}    reports   Reports to send in order, or null.
     @param   {*}        setting   Original setting for the debug message.
     @return  {Boolean}            False when reports is null and nothing was sent.
@@ -666,7 +771,11 @@ function relayReports(name, reports, setting) {
     }
 
     for (const report of reports) {
-        relayOS(report)
+        if ((report[0] & 0x0f) === 0x01) {
+            playSlot(slot, report.slice(1))
+        } else {
+            relayOS(report)
+        }
     }
 
     return true
