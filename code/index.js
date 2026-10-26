@@ -521,9 +521,170 @@ function forceFriction(number) {
     // friction ramps up again from 0x08 to 0x0F
     number = Math.round(number * 7)
 
+    // Effect type 0x02 is the low resolution damper: resistance grows with how fast the
+    // wheel turns. Despite the name this is not friction (confirmed on a G29).
     // the first "number" is for left rotation, the second for right rotation
     relayOS([0x21, 0x02, number, 0x00, number, 0x00, 0x00])
 } // forceFriction
+
+function damperReports(setting) {
+    /*
+    Build the HID reports for a damper setting without sending them.
+    @param   {*}  setting  Number, [strength, max] or {strength, max}. See API documentation.
+    @return  {Array}       Array of reports to send in order, or null when the setting is not understood.
+
+    The damper report is 0x21 0x0c K1 S1 K2 S2 MAX in slot 2 (shared with forceFriction):
+        K1, K2  damping coefficient for each direction, 0x00 to 0x0f (16 steps, no wrap around)
+        S1, S2  0x00 resists the movement, 0x01 would push along with it (not used)
+        MAX     force limit, 0x00 to 0xff
+    */
+    let strength
+    let max
+
+    if (typeof setting === 'undefined' || setting === false) {
+        strength = 0
+        max = 1
+    } else if (typeof setting === 'number') {
+        strength = unit(setting, NaN)
+        max = 1
+    } else if (Array.isArray(setting) && setting.length === 2) {
+        strength = unit(setting[0], NaN)
+        max = unit(setting[1], NaN)
+    } else if (setting !== null && typeof setting === 'object' && !Array.isArray(setting)) {
+        strength = unit(setting.strength, 1)
+        max = unit(setting.max, 1)
+    } else {
+        return null
+    }
+
+    if (Number.isNaN(strength) || Number.isNaN(max)) {
+        return null
+    }
+
+    if (strength === 0) {
+        return [forceOffReport(2)]
+    }
+
+    const k = Math.round(strength * 15)
+
+    return [[0x21, 0x0c, k, 0x00, k, 0x00, Math.round(max * 255)]]
+} // damperReports
+
+function forceDamper(setting) {
+    /*
+    Set or disable a damper: resistance that grows with how fast the wheel turns.
+    A finer forceFriction (16 steps instead of 8, plus a force limit). Both use slot 2,
+    so the most recent call wins.
+    @param   {*}        setting  Number between 0 and 1, [strength, max] or {strength, max}. Optional.
+    @return  {Boolean}           False when the setting was not understood and nothing was sent.
+    */
+    return relayReports('forceDamper', damperReports(setting), setting)
+} // forceDamper
+
+function springPosition(value) {
+    // 0 - 1 across the current wheel range to the 11 bit position the spring report uses
+    return Math.min(2047, Math.max(0, Math.round(value * 2048)))
+} // springPosition
+
+function springReports(setting) {
+    /*
+    Build the HID reports for a position spring without sending them.
+    @param   {*}  setting  false, [center, stiffness, max, deadband] or {center, stiffness, max, deadband}. See API documentation.
+    @return  {Array}       Array of reports to send in order, or null when the setting is not understood.
+
+    The spring report is 0x41 0x0b D1 D2 K S MAX in slot 3:
+        D1, D2  upper 8 bits of the 11 bit dead band edges (0 - 2047 across the current range)
+        K       stiffness, right side in the upper 4 bits and left side in the lower 4 bits
+        S       lower 3 bits of D1 (bits 1 - 3) and D2 (bits 5 - 7); bits 0 and 4 would invert the spring
+        MAX     force limit, 0x00 to 0xff
+    */
+    let center
+    let stiffness
+    let max
+    let deadband
+
+    if (typeof setting === 'undefined' || setting === false) {
+        return [forceOffReport(3)]
+    } else if (Array.isArray(setting) && setting.length >= 1 && setting.length <= 4) {
+        center = unit(setting[0], NaN)
+        stiffness = setting.length > 1 ? unit(setting[1], NaN) : 1
+        max = setting.length > 2 ? unit(setting[2], NaN) : 1
+        deadband = setting.length > 3 ? unit(setting[3], NaN) : 0
+    } else if (setting !== null && typeof setting === 'object' && !Array.isArray(setting)) {
+        center = unit(setting.center, NaN)
+        stiffness = unit(setting.stiffness, 1)
+        max = unit(setting.max, 1)
+        deadband = unit(setting.deadband, 0)
+    } else {
+        return null
+    }
+
+    if ([center, stiffness, max, deadband].some(Number.isNaN)) {
+        return null
+    }
+
+    const d1 = springPosition(center - deadband / 2)
+    const d2 = springPosition(center + deadband / 2)
+    const k = Math.round(stiffness * 15)
+
+    return [[
+        0x41,
+        0x0b,
+        d1 >> 3,
+        d2 >> 3,
+        (k << 4) + k,
+        ((d2 & 7) << 5) + ((d1 & 7) << 1),
+        Math.round(max * 255)
+    ]]
+} // springReports
+
+function forceSpring(setting) {
+    /*
+    Set or disable a position spring that pulls the wheel toward a chosen position.
+    Unlike auto-centering, the center can be anywhere and can have a dead band.
+    @param   {*}        setting  false, [center, stiffness, max, deadband] or {center, stiffness, max, deadband}. Optional.
+    @return  {Boolean}           False when the setting was not understood and nothing was sent.
+    */
+    return relayReports('forceSpring', springReports(setting), setting)
+} // forceSpring
+
+function relayReports(name, reports, setting) {
+    /*
+    Send reports built by one of the *Reports functions.
+    @param   {String}   name      Function name for the debug message.
+    @param   {Array}    reports   Reports to send in order, or null.
+    @param   {*}        setting   Original setting for the debug message.
+    @return  {Boolean}            False when reports is null and nothing was sent.
+    */
+    if (reports === null) {
+        if (options.debug) {
+            console.log(color.yellow(name + ' -> Ignoring unknown setting'), setting)
+        }
+        return false
+    }
+
+    for (const report of reports) {
+        relayOS(report)
+    }
+
+    return true
+} // relayReports
+
+function forceOffReport(slot) {
+    /*
+    Build the report that stops one effect slot, or every slot.
+    @param   {Number}  slot  1 to 4 for one slot, anything else for every slot.
+    @return  {Array}
+
+    The upper 4 bits of the first byte select slots as a bit mask (slot 1 = 0x10,
+    slot 2 = 0x20, slot 3 = 0x40, slot 4 = 0x80) and the lower 4 bits are the
+    operation, 0x03 = stop. Earlier versions built 0x30 for slot 3 (slots 1 and 2)
+    and 0x40 for slot 4 (slot 3).
+    */
+    const mask = (Number.isInteger(slot) && slot >= 1 && slot <= 4) ? (0x10 << (slot - 1)) : 0xf0
+
+    return [mask + 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+} // forceOffReport
 
 function forceOff(slot) {
     /*
@@ -531,18 +692,10 @@ function forceOff(slot) {
     @param  {Number}  slot  Number between 0 and 4. Optional.
     */
     // Great info at http://wiibrew.org/wiki/Logitech_USB_steering_wheel, especially about writing to more than one effect slot.
-    if (typeof slot === 'undefined') {
-        slot = 0xf3
-    } else {
-        if (slot === 0) {
-            slot = 0xf3
-        } else {
-            slot = parseInt('0x' + slot + '0')
-        }
-    }
+    // Slot 1 forceConstant, slot 2 forceFriction / forceDamper, slot 3 forceSpring, slot 4 unused.
 
     // turn off effects (except for auto-center)
-    relayOS([slot, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+    relayOS(forceOffReport(slot))
 } // forceOff
 
 //------------------
@@ -653,13 +806,17 @@ module.exports.leds = leds
 // force
 module.exports.autocenter = autocenter
 module.exports.forceConstant = forceConstant
+module.exports.forceDamper = forceDamper
 module.exports.forceFriction = forceFriction
 module.exports.forceOff = forceOff
+module.exports.forceSpring = forceSpring
 
 // wheel
 module.exports.range = range
 
 // advanced
 module.exports.autocenterReports = autocenterReports
+module.exports.damperReports = damperReports
+module.exports.springReports = springReports
 module.exports.relay = relay
 module.exports.relayOS = relayOS

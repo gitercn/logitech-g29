@@ -1,53 +1,17 @@
 'use strict'
 
-// Hardware-free tests: node-hid is replaced by a fake device that records every
-// report written, so they run anywhere with `npm run test:unit` (Node 18+).
+// Hardware-free tests (see fake.js), run with `npm run test:unit` (Node 18+).
 
-const Module = require('module')
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { EventEmitter } = require('events')
-
-const written = []
-
-class FakeHID extends EventEmitter {
-    read(callback) {
-        // a 12 byte report means "already in high precision mode", so connect()
-        // goes straight to listen() without the 8 second calibration wait
-        setImmediate(() => callback(null, Buffer.alloc(12)))
-    }
-
-    write(data) {
-        written.push(Array.from(data))
-    }
-
-    close() {}
-}
-
-const fakeHid = {
-    HID: FakeHID,
-    devices: () => [{ vendorId: 1133, productId: 49743, interface: 0, usagePage: 1, path: 'fake' }]
-}
-
-const originalLoad = Module._load
-Module._load = function load(request, parent, isMain) {
-    if (request === 'node-hid') return fakeHid
-    return originalLoad.call(this, request, parent, isMain)
-}
-
-const g = require('../../code/index.js')
-
-// relayOS prepends a 0x00 report id on Windows; compare without it everywhere.
-const prepend = process.platform === 'win32'
-const strip = (report) => (prepend ? report.slice(1) : report)
-const take = () => written.splice(0).map(strip)
+const { g, connect, take } = require('./fake')
 
 const ON = [0x14, 0, 0, 0, 0, 0, 0]
 const OFF = [0xf5, 0, 0, 0, 0, 0, 0]
 const spring = (left, right, force) => [0xfe, 0x0d, left, right, force, 0, 0, 0]
 
 test('connect applies the default spring 07 07 ff and range 900', async () => {
-    await new Promise((resolve, reject) => g.connect((err) => (err ? reject(err) : resolve())))
+    await connect()
 
     const reports = take()
 

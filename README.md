@@ -11,6 +11,13 @@ Bring your Logitech G29 Racing Wheel into the wonderful world of [Node](https://
 
 ## Changes in this fork
 
+**3.3.0**
+
+* Added: [`forceDamper(setting)`](docs/api.md#forcedamper), a finer damper with 16 steps and a force limit.
+* Added: [`forceSpring(setting)`](docs/api.md#forcespring), a position spring whose center can be anywhere, with an optional dead band.
+* Fixed: `forceOff(3)` stopped slots 1 and 2 and `forceOff(4)` stopped slot 3. Each slot is now stopped on its own; see [effect slots](docs/api.md#effect-slots).
+* Documented: `forceFriction` is a damper (resistance grows with turning speed), not friction.
+
 **3.2.0**
 
 * Fixed: the auto-centering stiffness was scaled to 0 - 15, but a G29 only accepts 0 - 7 (15 is the MOMO wheel range) and wraps 8 - 15 back to 0 - 7. Any first value above 0.5 in `autocenter: [x, y]` was therefore weaker than 0.5. Stiffness now maps 0 - 1 to 0 - 7, so `[1, 1]` is the default spring.
@@ -68,13 +75,18 @@ Vroom vroom sounds optional but encouraged. ^\_^
 * [force](docs/api.md#force)
   * [autocenter](docs/api.md#autocenter)
   * [forceConstant](docs/api.md#forceconstant)
+  * [forceDamper](docs/api.md#forcedamper)
   * [forceFriction](docs/api.md#forcefriction)
+  * [forceSpring](docs/api.md#forcespring)
   * [forceOff](docs/api.md#forceoff)
+  * [effect slots](docs/api.md#effect-slots)
 * [leds](docs/api.md#leds)
 * [range](docs/api.md#range)
 * [disconnect](docs/api.md#disconnect)
 * [advanced](docs/api.md#advanced)
   * [autocenterReports](docs/api.md#autocenterreports)
+  * [damperReports](docs/api.md#damperreports)
+  * [springReports](docs/api.md#springreports)
   * [emitter](docs/api.md#emitter)
   * [relay](docs/api.md#relay)
   * [relayOS](docs/api.md#relayos)

@@ -9,13 +9,18 @@
 * [force](#force)
   * [autocenter](#autocenter)
   * [forceConstant](#forceconstant)
+  * [forceDamper](#forcedamper)
   * [forceFriction](#forcefriction)
+  * [forceSpring](#forcespring)
   * [forceOff](#forceoff)
+  * [effect slots](#effect-slots)
 * [leds](#leds)
 * [range](#range)
 * [disconnect](#disconnect)
 * [advanced](#advanced)
   * [autocenterReports](#autocenterreports)
+  * [damperReports](#damperreports)
+  * [springReports](#springreports)
   * [emitter](#emitter)
   * [relay](#relay)
   * [relayOS](#relayos)
@@ -185,6 +190,28 @@ g.forceConstant(0.5) // no force
 g.forceConstant(1)   // full right
 ```
 
+### forceDamper
+
+`forceDamper(setting)`
+
+A damper: resistance that grows with how fast the wheel turns, like stirring honey. It is zero while the wheel is still. This is the finer version of [forceFriction](#forcefriction): 16 steps instead of 8, plus a force limit. Both use the same slot, so the most recent call wins. Returns `false` and sends nothing when the setting is not understood.
+
+```js
+g.forceDamper()                              // off
+g.forceDamper(0)                             // off
+g.forceDamper(0.5)                           // half strength
+g.forceDamper(1)                             // full strength
+g.forceDamper([1, 0.25])                     // [strength, max]: full strength, force capped at 25%
+g.forceDamper({ strength: 1, max: 0.25 })    // same as above
+```
+
+|Value|Meaning|Sent as|
+|:--|:--|:--|
+|strength|How quickly the resistance builds with speed.|0 - 15|
+|max|The most force the damper may apply, however fast the wheel turns. Defaults to `1`.|0 - 255|
+
+The hardware report is `0x21 0x0c K 0x00 K 0x00 MAX`.
+
 ### forceFriction
 
 `forceFriction(number)` where number is 0 - 1 to indicate effect strength.
@@ -196,11 +223,65 @@ g.forceFriction(0.5) // half strength
 g.forceFriction(1)   // full strength
 ```
 
+Despite the name, this is a damper (effect type `0x02`): turning slowly is light and turning fast is heavy. It has 8 steps (`0x21 0x02 K 0x00 K 0x00 0x00`, K 0 - 7) and no force limit. Kept for compatibility; [forceDamper](#forcedamper) is the finer version. A G29 does not appear to have a true friction effect: the Linux driver turns friction requests into a damper for this wheel, as the Windows driver does.
+
+### forceSpring
+
+`forceSpring(setting)`
+
+A position spring that pulls the wheel toward `center` and holds it there. Unlike [autocenter](#autocenter), the center can be anywhere and can have a dead band, so it can steer the wheel to a position by itself. Returns `false` and sends nothing when the setting is not understood.
+
+```js
+g.forceSpring()                                   // off
+g.forceSpring(false)                              // off
+g.forceSpring([0.5])                              // hold the middle, full stiffness and force
+g.forceSpring([0.625, 1, 0.5])                    // [center, stiffness, max]
+g.forceSpring([0.5, 1, 1, 0.1])                   // [center, stiffness, max, deadband]
+g.forceSpring({ center: 0.625, max: 0.5 })        // fields left out use the defaults below
+```
+
+|Value|Meaning|Sent as|
+|:--|:--|:--|
+|center|Where the wheel is pulled to, across the *current* [range](#range): `0` left end, `0.5` middle, `1` right end. The same scale as the `wheel-turn` event divided by 100. Required.|0 - 2047|
+|stiffness|How quickly the force builds as the wheel moves away from the center. Defaults to `1`.|0 - 15|
+|max|The most force the spring may apply. Defaults to `1`.|0 - 255|
+|deadband|Width of a free zone around the center, as a share of the range. Defaults to `0`.|-|
+
+A bare number is not accepted, so that `forceSpring(0)` cannot mean "pull hard to the left end".
+
+Because `center` follows the current range, the same setting points to a different angle after `range()` changes: with a G29, `center: 0.625` held the wheel at about 96° with a 900° range and at about 48° with a 450° range. The wheel settled at `wheel-turn` 60.65 rather than 62.5, so it stops a little short of the center.
+
+**Careful:** the spring turns the wheel by itself. Start with a low `max`.
+
+The hardware report is `0x41 0x0b D1 D2 K S MAX`, where D1 and D2 are the dead band edges.
+
 ### forceOff
 
-`forceOff()`
+`forceOff()` or `forceOff(slot)`
 
-Turn off all force effects except auto-centering.
+Turn off all force effects except auto-centering, or only the effect in one [slot](#effect-slots).
+
+```js
+g.forceOff()  // every slot
+g.forceOff(1) // forceConstant
+g.forceOff(2) // forceDamper / forceFriction
+g.forceOff(3) // forceSpring
+```
+
+Versions before 3.3.0 sent `forceOff(3)` to slots 1 and 2 and `forceOff(4)` to slot 3.
+
+### effect slots
+
+A G29 plays up to four effects at once, each stored in a slot inside the wheel. The upper four bits of a report's first byte choose the slot as a bit mask (slot 1 `0x1_`, slot 2 `0x2_`, slot 3 `0x4_`, slot 4 `0x8_`) and the lower four bits are the operation (`_1` start, `_3` stop). For example `0x41 0x0b ...` starts a spring in slot 3.
+
+|Slot|Used by|
+|:--|:--|
+|1|forceConstant|
+|2|forceDamper, forceFriction|
+|3|forceSpring|
+|4|unused|
+
+Auto-centering is not a slot effect and keeps working alongside all four. The wheel cannot report what is in a slot: the library only knows what it sent last.
 
 ### leds
 
@@ -261,6 +342,26 @@ Return the HID reports `autocenter(setting)` would send, without sending them. U
 
 ```js
 g.autocenterReports([0.5, 1]) // [[0x14, 0, 0, 0, 0, 0, 0], [0xfe, 0x0d, 4, 4, 255, 0, 0, 0]]
+```
+
+### damperReports
+
+`damperReports(setting)`
+
+Return the HID reports `forceDamper(setting)` would send, without sending them. Returns `null` when the setting is not understood.
+
+```js
+g.damperReports([1, 0.25]) // [[0x21, 0x0c, 15, 0, 15, 0, 64]]
+```
+
+### springReports
+
+`springReports(setting)`
+
+Return the HID reports `forceSpring(setting)` would send, without sending them. Returns `null` when the setting is not understood.
+
+```js
+g.springReports([0.625]) // [[0x41, 0x0b, 0xa0, 0xa0, 0xff, 0, 0xff]]
 ```
 
 ### emitter
