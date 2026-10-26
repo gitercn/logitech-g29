@@ -34,6 +34,30 @@ test('forceConstant(0.5) and forceFriction(0) still stop their own slot', () => 
     assert.deepEqual(take(), [stop(0x13), stop(0x23)])
 })
 
+test('forceFriction, the old name of forceDamper, still sends the 8 step damper', () => {
+    g.forceFriction(1)
+    g.forceFriction(0.5)
+    g.forceFriction()
+
+    assert.deepEqual(take(), [
+        [0x21, 0x02, 7, 0, 7, 0, 0],
+        [0x21, 0x02, 4, 0, 4, 0, 0],
+        stop(0x23)
+    ])
+})
+
+test('forceDamper accepts every forceFriction call', () => {
+    g.forceDamper(1)
+    g.forceDamper(0.5)
+    g.forceDamper()
+
+    assert.deepEqual(take(), [
+        [0x21, 0x0c, 15, 0, 15, 0, 0xff],
+        [0x21, 0x0c, 8, 0, 8, 0, 0xff],
+        stop(0x23)
+    ])
+})
+
 test('damperReports uses the 16 step damper in slot 2', () => {
     assert.deepEqual(g.damperReports(1), [[0x21, 0x0c, 0x0f, 0, 0x0f, 0, 0xff]])
     assert.deepEqual(g.damperReports(0.53), [[0x21, 0x0c, 0x08, 0, 0x08, 0, 0xff]])

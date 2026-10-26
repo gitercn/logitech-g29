@@ -506,8 +506,10 @@ function forceConstant(number) {
 
 function forceFriction(number) {
     /*
-    Set or disable the amount of friction present when turning the wheel.
+    Old name for forceDamper, kept so existing code feels exactly the same.
+    Set or disable a damper: resistance that grows with how fast the wheel turns.
     @param  {Number}  number  Number between 0 and 1. Optional.
+    @deprecated  Use forceDamper(number), which takes the same 0 - 1 value with 16 steps instead of 8.
     */
     if (typeof number === 'undefined') number = 0
 

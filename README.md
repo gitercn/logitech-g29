@@ -13,10 +13,9 @@ Bring your Logitech G29 Racing Wheel into the wonderful world of [Node](https://
 
 **3.3.0**
 
-* Added: [`forceDamper(setting)`](docs/api.md#forcedamper), a finer damper with 16 steps and a force limit.
+* Renamed: `forceFriction` is really a damper (resistance grows with turning speed), so it is now [`forceDamper(setting)`](docs/api.md#forcedamper). It takes the same 0 - 1 value with 16 steps instead of 8, plus an optional force limit. `forceFriction` still works unchanged.
 * Added: [`forceSpring(setting)`](docs/api.md#forcespring), a position spring whose center can be anywhere, with an optional dead band.
 * Fixed: `forceOff(3)` stopped slots 1 and 2 and `forceOff(4)` stopped slot 3. Each slot is now stopped on its own; see [effect slots](docs/api.md#effect-slots).
-* Documented: `forceFriction` is a damper (resistance grows with turning speed), not friction.
 
 **3.2.0**
 
@@ -76,7 +75,7 @@ Vroom vroom sounds optional but encouraged. ^\_^
   * [autocenter](docs/api.md#autocenter)
   * [forceConstant](docs/api.md#forceconstant)
   * [forceDamper](docs/api.md#forcedamper)
-  * [forceFriction](docs/api.md#forcefriction)
+  * [forceFriction](docs/api.md#forcefriction) (old name of forceDamper)
   * [forceSpring](docs/api.md#forcespring)
   * [forceOff](docs/api.md#forceoff)
   * [effect slots](docs/api.md#effect-slots)

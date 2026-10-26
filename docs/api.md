@@ -10,7 +10,7 @@
   * [autocenter](#autocenter)
   * [forceConstant](#forceconstant)
   * [forceDamper](#forcedamper)
-  * [forceFriction](#forcefriction)
+  * [forceFriction](#forcefriction) (old name of forceDamper)
   * [forceSpring](#forcespring)
   * [forceOff](#forceoff)
   * [effect slots](#effect-slots)
@@ -194,7 +194,7 @@ g.forceConstant(1)   // full right
 
 `forceDamper(setting)`
 
-A damper: resistance that grows with how fast the wheel turns, like stirring honey. It is zero while the wheel is still. This is the finer version of [forceFriction](#forcefriction): 16 steps instead of 8, plus a force limit. Both use the same slot, so the most recent call wins. Returns `false` and sends nothing when the setting is not understood.
+A damper: resistance that grows with how fast the wheel turns, like stirring honey. It is zero while the wheel is still. This is the new name for [forceFriction](#forcefriction), with 16 steps instead of 8 and an optional force limit. Both use the same slot, so the most recent call wins. Returns `false` and sends nothing when the setting is not understood.
 
 ```js
 g.forceDamper()                              // off
@@ -214,16 +214,26 @@ The hardware report is `0x21 0x0c K 0x00 K 0x00 MAX`.
 
 ### forceFriction
 
+**Old name, use [forceDamper](#forcedamper) instead.** `forceFriction` still works and sends exactly what it always did, so existing code feels the same.
+
 `forceFriction(number)` where number is 0 - 1 to indicate effect strength.
 
 ```js
-g.forceFriction()    // no friction
-g.forceFriction(0)   // no friction
+g.forceFriction()    // off
+g.forceFriction(0)   // off
 g.forceFriction(0.5) // half strength
 g.forceFriction(1)   // full strength
 ```
 
-Despite the name, this is a damper (effect type `0x02`): turning slowly is light and turning fast is heavy. It has 8 steps (`0x21 0x02 K 0x00 K 0x00 0x00`, K 0 - 7) and no force limit. Kept for compatibility; [forceDamper](#forcedamper) is the finer version. A G29 does not appear to have a true friction effect: the Linux driver turns friction requests into a damper for this wheel, as the Windows driver does.
+Despite the name, this is a damper (effect type `0x02`), confirmed on a G29: turning slowly is light, turning fast is heavy, and there is no force while the wheel is still. It has 8 steps (`0x21 0x02 K 0x00 K 0x00 0x00`, K 0 - 7) and no force limit. A G29 does not appear to have a true friction effect: the Linux driver turns friction requests into a damper for this wheel, as the Windows driver does.
+
+Switching is a rename: `forceDamper` takes the same 0 - 1 value, uses the same slot and is turned off the same way. Because it has 16 steps instead of 8, the same value can feel very slightly different (`0.5` is step 4 of 7 here and step 8 of 15 there).
+
+|Old|New|
+|:--|:--|
+|`forceFriction()` / `forceFriction(0)`|`forceDamper()` / `forceDamper(0)`|
+|`forceFriction(0.5)`|`forceDamper(0.5)`|
+|`forceOff(2)`|`forceOff(2)`|
 
 ### forceSpring
 
