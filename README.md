@@ -36,7 +36,7 @@ Bring your Logitech G29 Racing Wheel into the wonderful world of [Node](https://
 
 Node version 10.16 or the Node version required by any dependency, whichever is greater.
 
-Make sure the Logitech G29 mode switch is set to PS3. The switch is located above the middle of the steering wheel.
+Set the Logitech G29 mode switch, above the middle of the steering wheel, to **PC** (marked **PS3** on older wheels). In that position the wheel reports USB id `046D:C24F` and speaks the protocol this library uses. The **PS4** / **PS5** position (USB id `046D:C260`) is not supported; on a PC that mode only gets force feedback through Logitech G HUB.
 
 ## Install
 
